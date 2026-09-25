@@ -54,6 +54,13 @@ any error-severity finding was reported, so it's usable as a CI gate.
 - **symbol-code-mismatch** (error) — a currency symbol and an ISO 4217 code
   appear together on an amount, but the code isn't one the symbol could
   plausibly mean (e.g. `$` with `EUR`).
+- **ambiguous-separator** (warning) — an amount carrying a currency symbol
+  or code uses `.` as a thousands separator (`1.234,56`, the European
+  convention). Only flagged when a symbol/code marks it as money, since a
+  bare dot-grouped number is just as likely to be a version string or an IP
+  address. `Number()` and `parseFloat()` both read `.` as a decimal point,
+  so this shape gets silently truncated (`1.234,56` parses as `1.234`) by
+  any code that assumes the US convention.
 
 ## How it's built
 
@@ -65,7 +72,6 @@ so the project has zero dependencies, including for types.
 
 ## Roadmap
 
-- detect ambiguous decimal/thousands separators (`1.234,56` vs `1,234.56`)
 - add a JSON output mode for editor integration
 - support a configurable currency symbol map
 - add inline ignore comments (`money-lint-disable-line`)

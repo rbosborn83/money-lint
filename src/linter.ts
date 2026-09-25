@@ -34,12 +34,15 @@ const SYMBOL_CURRENCIES: Record<string, string[]> = {
 const MONEY_IDENTIFIER =
   /price|amount|cost|total|fee|balance|salary|wage|payment|charge|subtotal|tax|discount|refund|invoice/i;
 
-// An optional currency symbol, a number (with optional thousands grouping
-// and decimal part), and an optional trailing ISO 4217 code. The symbol and
-// code each own their adjoining whitespace so a bare number with no
-// symbol/code never picks up a stray leading space in its match.
+// An optional currency symbol, a number, and an optional trailing ISO 4217
+// code. The symbol and code each own their adjoining whitespace so a bare
+// number with no symbol/code never picks up a stray leading space in its
+// match. The number itself is one of three shapes, tried in order: comma
+// thousands grouping with an optional dot decimal (1,234.56, US-style),
+// dot thousands grouping with an optional comma decimal (1.234,56,
+// European-style), or a plain integer/decimal with no grouping at all.
 const TOKEN_PATTERN =
-  /(?:([$€£¥])\s?)?(\d+(?:,\d{3})*(?:\.\d+)?)(?:\s?([A-Z]{3})\b)?/g;
+  /(?:([$€£¥])\s?)?(\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d{1,3}(?:\.\d{3})+(?:,\d+)?|\d+(?:\.\d+)?)(?:\s?([A-Z]{3})\b)?/g;
 
 function findAmountTokens(line: string): AmountToken[] {
   const tokens: AmountToken[] = [];
@@ -90,6 +93,48 @@ function checkSymbolCodeMismatch(
   return findings;
 }
 
+// Matches the European grouping shape our second TOKEN_PATTERN alternative
+// produces: one or more dot-separated groups of exactly three digits,
+// optionally followed by a comma decimal part. Anything JS itself would
+// parse as a number (plain decimals, comma-grouped US numbers) never
+// reaches this far because the dot never appears as a group separator.
+const DOT_GROUPED_SHAPE = /^(\d{1,3}(?:\.\d{3})+)(?:,(\d+))?$/;
+
+function checkAmbiguousSeparator(
+  file: string,
+  lineNumber: number,
+  tokens: AmountToken[],
+): Finding[] {
+  const findings: Finding[] = [];
+  for (const token of tokens) {
+    // Only flag amounts we know are money — a symbol or ISO code attached.
+    // Without one, a dot-grouped number is just as likely to be a version
+    // string or an IP address, and reporting on it would be noise.
+    if (!token.symbol && !token.code) continue;
+    const match = DOT_GROUPED_SHAPE.exec(token.amount);
+    if (!match) continue;
+    const [, wholePart, decimalPart] = match;
+    const amountOffset = token.raw.indexOf(token.amount);
+    const startColumn = token.startColumn + amountOffset;
+    const message = decimalPart
+      ? `'${token.amount}' uses '.' as a thousands separator and ',' as the decimal point ` +
+        `(European-style). A naive parse (Number(), parseFloat()) stops at the comma and reads ` +
+        `${wholePart}, not the intended ${wholePart.replace(/\./g, "")}.${decimalPart}.`
+      : `'${token.amount}' uses '.' as a thousands separator (European-style). A naive parse ` +
+        `(Number(), parseFloat()) reads it as the decimal ${token.amount}, not the intended ` +
+        `integer ${wholePart.replace(/\./g, "")}.`;
+    findings.push({
+      file,
+      rule: "ambiguous-separator",
+      severity: "warning",
+      message,
+      start: { line: lineNumber, column: startColumn },
+      end: { line: lineNumber, column: startColumn + token.amount.length },
+    });
+  }
+  return findings;
+}
+
 const MONEY_DECLARATION =
   /\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*(?::\s*number)?\s*=\s*(-?\d+\.\d{2,})\b/g;
 
@@ -126,6 +171,7 @@ export function lint(source: string, file: string): Finding[] {
     const lineNumber = index + 1;
     const tokens = findAmountTokens(line);
     findings.push(...checkSymbolCodeMismatch(file, lineNumber, tokens));
+    findings.push(...checkAmbiguousSeparator(file, lineNumber, tokens));
     findings.push(...checkFloatLiteralMoney(file, lineNumber, line));
   });
   return findings;
